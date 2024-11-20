@@ -6,6 +6,18 @@ import torch.nn as nn
 
 class ConvLayer(nn.Module):
     def __init__(self, atom_fea_len, nbr_fea_len):
+        """
+        Initialize ConvLayer.
+
+        Parameters
+        ----------
+
+        atom_fea_len: int
+          Number of atom hidden features.
+        nbr_fea_len: int
+          Number of bond features.
+        """
+        
         super(ConvLayer, self).__init__()
         self.atom_fea_len = atom_fea_len
         self.nbr_fea_len = nbr_fea_len
@@ -24,8 +36,8 @@ class ConvLayer(nn.Module):
         atom_in_fea_u = atom_in_fea.unsqueeze(1).expand(N, M1, self.atom_fea_len)
         atom_nbr_fea_1, atom_nbr_fea_2 = atom_nbr_fea.chunk(2,dim=1)
         nbr_fea_1,nbr_fea_2 = nbr_fea.chunk(2,dim=1)
-        update_nbr_fea_1 = torch.cat([atom_in_fea_u,atom_nbr_fea_1, nbr_fea_1], dim=2)
-        update_nbr_fea_2 = torch.cat([atom_in_fea_u,atom_nbr_fea_2, nbr_fea_2], dim=2)
+        update_nbr_fea_1 = torch.cat([atom_in_fea_u, atom_nbr_fea_1, nbr_fea_1], dim=2)
+        update_nbr_fea_2 = torch.cat([atom_in_fea_u, atom_nbr_fea_2, nbr_fea_2], dim=2)
         total_gated_fea_1 = self.fc_full_1(update_nbr_fea_1)
         total_gated_fea_2 = self.fc_full_1(update_nbr_fea_2)
         total_gated_fea_1 = self.relu(total_gated_fea_1)
@@ -40,7 +52,7 @@ class ConvLayer(nn.Module):
 
 class CrystalGraphConvNet(nn.Module):
     def __init__(self, orig_atom_fea_len, nbr_fea_len,
-                 atom_fea_len=64, n_conv=3, h_fea_len=128,n_p=1,
+                 atom_fea_len=64, n_conv=3, h_fea_len=128, n_p=1,
                  classification=False,dropout=0):
         super(CrystalGraphConvNet, self).__init__()
         self.classification = classification
@@ -61,14 +73,14 @@ class CrystalGraphConvNet(nn.Module):
             self.logsoftmax = nn.LogSoftmax(dim=1)
         self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, atom_fea, nbr_fea, nbr_fea_idx, M1_index, crystal_atom_idx,m2_fea):
+    def forward(self, atom_fea, nbr_fea, nbr_fea_idx, M1_index, crystal_atom_idx, m2_fea):
         atom_fea = self.embedding(atom_fea)
         atom_fea = self.fc_softplus(atom_fea)
         for conv_func in self.convs:
             atom_fea = conv_func(atom_fea, nbr_fea, nbr_fea_idx)
         m1_fea = atom_fea[M1_index,:]
         crys_fea = self.pooling(m1_fea, crystal_atom_idx)
-        crys_fea = torch.cat([crys_fea,m2_fea],dim=1)
+        crys_fea = torch.cat([crys_fea, m2_fea], dim=1)
         crys_features = [self.conv_to_fc[i](self.conv_to_fc_activation[i](crys_fea))\
             for i in range(self.n_p)]
         crys_features = [self.conv_to_fc_activation[i](crys_features[i]) for i in range(self.n_p)]

@@ -14,21 +14,54 @@ from torch.utils.data import Dataset, DataLoader
 
 
 def collate_pool(dataset_list):
+    """
+    Collate a list of data and return a batch for predicting crystal
+    properties.
+
+    Parameters
+    ----------
+
+    dataset_list: list of tuples for each data point.
+      (atom_fea, nbr_fea, nbr_fea_idx, target)
+
+      atom_fea: torch.Tensor shape (n_i, atom_fea_len)
+      nbr_fea: torch.Tensor shape (n_i, M, nbr_fea_len)
+      nbr_fea_idx: torch.LongTensor shape (n_i, M)
+      target: torch.Tensor shape (1, )
+      cif_id: str or int
+
+    Returns
+    -------
+    N = sum(n_i); N0 = sum(i)
+
+    batch_atom_fea: torch.Tensor shape (N, orig_atom_fea_len)
+      Atom features from atom type
+    batch_nbr_fea: torch.Tensor shape (N, M, nbr_fea_len)
+      Bond features of each atom's M neighbors
+    batch_nbr_fea_idx: torch.LongTensor shape (N, M)
+      Indices of M neighbors of each atom
+    crystal_atom_idx: list of torch.LongTensor of length N0
+      Mapping from the crystal idx to atom idx
+    target: torch.Tensor shape (N, 1)
+      Target value for prediction
+    batch_cif_ids: list
+    """
+
     batch_atom_fea, batch_nbr_fea, batch_nbr_fea_idx, batch_m1_index = [], [], [], []
     crystal_atom_idx, batch_target = [], []
     batch_cif_ids = []
     batch_m2_fea = []
     base_idx = 0
     base_m1_idx = 0
-    for i, ((atom_fea, nbr_fea, nbr_fea_idx,m1_index,m2_feature), target, cif_id)\
+    for i, ((atom_fea, nbr_fea, nbr_fea_idx, m1_index, m2_feature), target, cif_id)\
             in enumerate(dataset_list):
         n_i = atom_fea.shape[0]  # number of atoms for this crystal
         m1_i = m1_index.shape[0]
         batch_atom_fea.append(atom_fea)
         batch_nbr_fea.append(nbr_fea)
-        batch_nbr_fea_idx.append(nbr_fea_idx+base_idx)
+        batch_nbr_fea_idx.append(nbr_fea_idx + base_idx)
         batch_m1_index.append(m1_index + base_idx)
-        new_idx = torch.LongTensor(np.arange(m1_i)+base_m1_idx)
+        new_idx = torch.LongTensor(np.arange(m1_i) + base_m1_idx)
         crystal_atom_idx.append(new_idx)
         batch_target.append(target)
         batch_cif_ids.append(cif_id)
@@ -38,18 +71,29 @@ def collate_pool(dataset_list):
     return (torch.cat(batch_atom_fea, dim=0),
             torch.cat(batch_nbr_fea, dim=0),
             torch.cat(batch_nbr_fea_idx, dim=0),
-            torch.cat(batch_m1_index,dim=0),
+            torch.cat(batch_m1_index, dim=0),
             crystal_atom_idx,
-            torch.stack(batch_m2_fea,dim=0)),\
+            torch.stack(batch_m2_fea, dim=0)),\
         torch.stack(batch_target, dim=0),\
         batch_cif_ids
 
 
 class GaussianDistance(object):
     def __init__(self, dmin, dmax, step, var=None):
+        """
+        Parameters
+        ----------
+
+        dmin: float
+          Minimum interatomic distance
+        dmax: float
+          Maximum interatomic distance
+        step: float
+          Step size for the Gaussian filter
+        """
         assert dmin < dmax
         assert dmax - dmin > step
-        self.filter = np.arange(dmin, dmax+step, step)
+        self.filter = np.arange(dmin, dmax + step, step)
         if var is None:
             var = step
         self.var = var
@@ -59,8 +103,56 @@ class GaussianDistance(object):
                       self.var**2)
 
 class CIFData(Dataset):
-    def __init__(self, root_dir,dataset, max_num_nbr=10,metal_max_num_nbr=16, metal_radius=8, radius=6, dmin=0, step=0.2,
-                 random_seed=24,pred=False):
+    """
+    The CIFData dataset is a wrapper for a dataset where the crystal structures
+    are stored in the form of CIF files. The dataset should have the following
+    directory structure:
+
+    root_dir
+    ├── id_prop.csv
+    ├── atom_init.json
+    ├── id0.cif
+    ├── id1.cif
+    ├── ...
+
+    id_prop.csv: a CSV file with two columns. The first column recodes a
+    unique ID for each crystal, and the second column recodes the value of
+    target property.
+
+    atom_init.json: a JSON file that stores the initialization vector for each
+    element.
+
+    ID.cif: a CIF file that recodes the crystal structure, where ID is the
+    unique ID for the crystal.
+
+    Parameters
+    ----------
+
+    root_dir: str
+        The path to the root directory of the dataset
+    max_num_nbr: int
+        The maximum number of neighbors while constructing the crystal graph
+    radius: float
+        The cutoff radius for searching neighbors
+    dmin: float
+        The minimum distance for constructing GaussianDistance
+    step: float
+        The step size for constructing GaussianDistance
+    random_seed: int
+        Random seed for shuffling the dataset
+
+    Returns
+    -------
+
+    atom_fea: torch.Tensor shape (n_i, atom_fea_len)
+    nbr_fea: torch.Tensor shape (n_i, M, nbr_fea_len)
+    nbr_fea_idx: torch.LongTensor shape (n_i, M)
+    target: torch.Tensor shape (1, )
+    cif_id: str or int
+    """
+    
+    def __init__(self, root_dir, dataset, max_num_nbr=10, metal_max_num_nbr=16, metal_radius=8, radius=6, dmin=0, step=0.2,
+                 random_seed=24, pred=False):
         self.root_dir = root_dir
         self.max_num_nbr, self.radius = max_num_nbr, radius
         self.metal_max_num_nbr, self.metal_radius = metal_max_num_nbr, metal_radius
@@ -76,10 +168,11 @@ class CIFData(Dataset):
     def __getitem__(self, idx):
         if self.pred == False:
             cif_id = str(self.id_prop_data[idx][0])
-            target = [float(x) for x in self.id_prop_data[idx][5:6]]
+            target = [float(x) for x in self.id_prop_data[idx][-1]]
         else:
             cif_id,target = str(self.id_prop_data[idx][0]),[float(self.id_prop_data[idx][-1])]
-        m2_feature = [float(self.id_prop_data[idx][1]),float(self.id_prop_data[idx][2]),float(self.id_prop_data[idx][3]),float(self.id_prop_data[idx][4])]
+        m2_feature = [float(x) for x in self.id_prop_data[idx][1:-1]]   # multiple m2 features
+
         crystal = Structure.from_file(os.path.join(self.root_dir,
                                                    cif_id+'.cif'))
         metal_index = []
@@ -149,4 +242,4 @@ class CIFData(Dataset):
         M1_index = torch.LongTensor(M1_idx)
         target = torch.Tensor(target)
         M2_feature = torch.Tensor(m2_feature)
-        return (atom_fea, nbr_fea, nbr_fea_idx,M1_index,M2_feature), target, cif_id
+        return (atom_fea, nbr_fea, nbr_fea_idx, M1_index, M2_feature), target, cif_id
